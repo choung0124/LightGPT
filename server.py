@@ -12,7 +12,6 @@ from server_utils import (
     create_docs_from_results_formatted,
     filtered_create_docs_from_results_formatted
 )
-from ExllamaV2Inference import inference
 from pathlib import Path
 import shutil
 from langchain.text_splitter import CharacterTextSplitter
