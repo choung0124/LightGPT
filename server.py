@@ -64,7 +64,7 @@ class PDF(BaseModel):
     file: UploadFile = File(...)
     name: str
     link: str
-
+# dasidjdko
 @app.post("/upload_pdf/")
 async def upload_pdf(pdf: PDF):
     file = pdf.file
