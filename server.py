@@ -1,3 +1,4 @@
+# Import necessary modules and functions
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,21 +31,21 @@ import aiohttp
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
 import os
+import fitz  # PyMuPDF
+from fastapi.staticfiles import StaticFiles
+from os import listdir
+from os.path import isfile, join
 
-sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-model_name="model9/",
-device="cuda",
-normalize_embeddings=True
-)
+### FastAPI ###############################################################################################################
 
-text_splitter = CharacterTextSplitter.from_tiktoken_encoder(
-    chunk_size=2000, chunk_overlap=200
-)
-
+# Initialize FastAPI app
+# Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
+# Set CORS (Cross-Origin Resource Sharing) policy 
+# CORS 이란? https://inpa.tistory.com/entry/WEB-%F0%9F%93%9A-CORS-%F0%9F%92%AF-%EC%A0%95%EB%A6%AC-%ED%95%B4%EA%B2%B0-%EB%B0%A9%EB%B2%95-%F0%9F%91%8F
+# FastAPI CORS 설정: https://fastapi.tiangolo.com/ko/tutorial/cors/
 origins = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -53,23 +54,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-persist_directory = ("vectordbs/")
-chromadb_client = chromadb.PersistentClient(path=persist_directory)
+# Mount a directory to serve static files (for thumbnails)
+# FastAPI Static Files: https://fastapi.tiangolo.com/tutorial/static-files/
+app.mount("/thumbnails", StaticFiles(directory="thumbnails"), name="thumbnails")
+
+### ChromaDB ##############################################################################################################
+
+# ChromaDB 한글: https://opentutorials.org/module/6369/32376
+persist_directory = ("vectordbs/") # Directory where the vector database is stored
+chromadb_client = chromadb.PersistentClient(path=persist_directory) # Create a ChromaDB client in that directory
+
+# Create an embedding function(this function will be used to convert text to vectors)
+sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
+model_name="model9/", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
+device="cuda", # Specify the device to use, in this case, GPU
+normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
+) 
+
+# Load the vector database, and save it to the variable vectordb
 vectordb = chromadb_client.get_collection(name="LightGPT", embedding_function=sentence_transformer_ef)
 
-prompts = {}
-answers = {}
+### Langchain #############################################################################################################
 
+text_splitter = CharacterTextSplitter.from_tiktoken_encoder( # Create an instance of the CharacterTextSplitter class (https://python.langchain.com/docs/modules/data_connection/document_transformers/split_by_token#tiktoken)
+    chunk_size=2000, chunk_overlap=200
+) # This function splits text into chunks of 2000 characters, with an overlap of 200 characters
+
+############################################################################################################################
+
+prompts = {} # Define a dictionary to store prompts
+
+### Uploading PDF Enpoint #################################################################################################
+
+# Define a Pydantic model for PDF upload
+# Pydantic 이란? https://lsjsj92.tistory.com/650
 class PDF(BaseModel):
-    file: UploadFile = File(...)
+    file: UploadFile = File(...) 
     name: str
     link: str
-
+    
+# Endpoint for uploading PDF files
 @app.post("/upload_pdf/")
-async def upload_pdf(pdf: PDF):
+async def upload_pdf(pdf: PDF): 
+    # Get the file from the request
     file = pdf.file
     # Define the directory where you want to save the file
-    directory = Path("pdfs/")  # Replace with your directory
+    directory = Path("pdfs/")
 
     # Create the directory if it doesn't exist
     directory.mkdir(parents=True, exist_ok=True)
@@ -79,9 +109,9 @@ async def upload_pdf(pdf: PDF):
 
     # Save the uploaded file to the directory
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        shutil.copyfileobj(file.file, buffer) 
 
-    texts = load_and_split_document(str(file_path))
+    texts = load_and_split_document(str(file_path)) # Load and split the document
 
     result = add_to_vectordb(texts, pdf.name, pdf.link)
 
@@ -92,6 +122,8 @@ async def upload_pdf(pdf: PDF):
 
     return result
     
+### Uploading Text Enpoint ################################################################################################
+
 class Text(BaseModel):
     string: str
     name: str
@@ -186,6 +218,43 @@ async def get_pdf(pdf_name: PDFName):
         raise HTTPException(status_code=404, detail=f"File not found: {pdf_name.name}")
 
     return response
+
+def generate_thumbnail(pdf_path):
+    thumbnail_path = "thumbnails/" + pdf_path.split('/')[-1].replace('.pdf', '.png')
+
+    # Check if thumbnail already exists
+    if not isfile(thumbnail_path):
+        try:
+            doc = fitz.open(pdf_path)
+            if doc.page_count > 0:
+                page = doc.load_page(0)  # first page
+                pix = page.get_pixmap()
+                pix.save(thumbnail_path)
+            else:
+                print(f"Document is empty: {pdf_path}")
+                return None
+        except Exception as e:
+            print(f"Error generating thumbnail for {pdf_path}: {e}")
+            return None
+
+    return thumbnail_path
+
+
+@app.get("/list_pdfs/")
+async def list_pdfs():
+    pdf_directory = "pdfs/"
+    pdf_dicts = []
+    pdf_files = [f for f in listdir(pdf_directory) if isfile(join(pdf_directory, f)) and f.lower().endswith('.pdf')]
+
+    for file in pdf_files:
+        pdf_path = join(pdf_directory, file)
+        thumbnail_path = generate_thumbnail(pdf_path)
+        if thumbnail_path:
+            # Create a URL for the thumbnail
+            thumbnail_url = f"/thumbnails/{thumbnail_path.split('/')[-1]}"
+            pdf_dicts.append({"name": file, "image": thumbnail_url})
+
+    return pdf_dicts
 
 async def stream_generator(prompt_id: str):
     if prompt_id not in prompts:
