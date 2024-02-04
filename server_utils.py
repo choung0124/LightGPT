@@ -6,22 +6,25 @@ from chromadb.utils import embedding_functions
 import argparse
 from langchain.document_loaders import PyPDFLoader
 
-
 persist_directory = ("vectordbs/")
 chromadb_client = chromadb.PersistentClient(path=persist_directory)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-model_name="model9/",
+model_name="BAAI/bge-large-en-v1.5",
 device="cuda",
 normalize_embeddings=True
 )
 
 
-prompt_template = """<s> [INST] Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. When presenting your answer, strictly follow this format:
+prompt_template_2 = """<s> [INST] Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. When presenting your answer, strictly follow this format:
 Answer: Your Answer goes here
 Question: {question}
 Context:
-{context} [/INST]"""
+{context} 
+Previous Chats:
+{previous_chats_str} [/INST]"""
+
+
 
 '''
 prompt_template = """USER: Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. When presenting your answer, strictly follow this format:
@@ -40,10 +43,36 @@ Question: {question}
 Context:
 {context}<|im_end|>
 <|im_start|>assistant
+
+prompt_template_1 = """<s> [INST] Below is a question, followed by a list of references that may be related to the question. DO NOT answer the question, instead choose ONLY one reference that help answer the question. When presenting your selected references, strictly follow this format:
+[
+    {{ "Reference 1": "Reference ID" }},
+    {{ "Reference 2": "Reference ID" }},
+    {{ "Reference n": "Reference ID" }}
+]
+/List
+
+You MUST use /List to indicate the end of your list of references.
+For example, if you think a reference is relevant, your response should look like this. Do not include anything else in your response:
+[
+    {{ "Reference": "Reference ID" }},
+]
+/List
+
+If there are no references that help answer the question, your response should look like this. Do not include anything else in your response:
+[
+    {{ }}
+]
+/List
+
+Question: {question}
+Context
+{context} [/INST]"""
+
 """
 '''
 
-prompt_template_selection = """<s> [INST] Below is a question, followed by a list of references that may be related to the question. DO NOT answer the question, instead choose ONLY one or two references that help answer the question. When presenting your selected references, strictly follow this format:
+prompt_template_1 = """<s> [INST] Below is a question, followed by a list of references that may be related to the question. DO NOT answer the question, instead choose ONLY one or two reference that help answer the question. When presenting your selected references, strictly follow this format:
 [
     {{ "Reference 1": "Reference ID" }},
     {{ "Reference 2": "Reference ID" }},
@@ -58,7 +87,6 @@ For example, if you think Reference 1 and Reference 3 are relevant, your respons
     {{ "Reference 3": "Reference ID" }}
 ]
 /List
-
 If there are no references that help answer the question, your response should look like this. Do not include anything else in your response:
 [
     {{ }}
@@ -138,20 +166,23 @@ Context
 {context}
 ASSISTANT: """
 '''
+
 def create_docs_from_results(results):
     # Flatten the lists
     documents = [doc for sublist in results["documents"] for doc in sublist]
     metadatas = [meta for sublist in results["metadatas"] for meta in sublist]
+    ids = [id for sublist in results["ids"] for id in sublist]
 
     # Create the list of dictionaries
     docs = []
-    for document, metadata in zip(documents, metadatas):
-        doc = {"document": document, "metadata": metadata}
+    for document, metadata, id in zip(documents, metadatas, ids):
+        doc = {"document": document, "metadata": metadata, "id": id}
         docs.append(doc)
 
     return docs
 
-def create_docs_from_results_formatted(results):
+
+def format_context(results):
     # Flatten the lists
     documents = [doc for sublist in results["documents"] for doc in sublist]
     metadatas = [meta for sublist in results["metadatas"] for meta in sublist]
@@ -170,7 +201,7 @@ def create_docs_from_results_formatted(results):
 
     return formatted_context
 
-def filtered_create_docs_from_results_formatted(results, reference_ids):
+def filter_and_format_context(results):
     # Flatten the lists
     documents = [doc for sublist in results["documents"] for doc in sublist]
     metadatas = [meta for sublist in results["metadatas"] for meta in sublist]
@@ -181,15 +212,13 @@ def filtered_create_docs_from_results_formatted(results, reference_ids):
     relevant_pages = []
     count = 0
     for document, metadata, id in zip(documents, metadatas, ids):
-        if id in reference_ids:
-            count += 1
-            context_str = f"Reference {count}:\nReference ID: {id}\n{document}\nFrom: {metadata['name']}\n"
-            name = metadata['name']
-            page_number = metadata['page']
-            relevant_pages.append({"name": name, "page": page_number})
-            contexts.append(context_str)
-        else:
-            continue
+        count += 1
+        context_str = f"{document}\nFrom: {metadata['name']}\n"
+        name = metadata['name']
+        page_number = metadata['page']
+        pdf_id = metadata['pdf_id']
+        relevant_pages.append({"name": name, "pdf_id": pdf_id, "page": page_number})
+        contexts.append(context_str)
 
     # Join the contexts into one string with separators
     formatted_context = "\n".join(contexts)
@@ -208,8 +237,8 @@ def load_and_split_document(file_path):
     return pages
 
 
-def add_to_vectordb(texts, name, link): 
-    vectordb = chromadb_client.get_collection(name="LightGPT", embedding_function=sentence_transformer_ef)
+def add_to_vectordb(texts, name, pdf_id, page_number):
+    vectordb = chromadb_client.get_collection(name="LightGPT_BGE", embedding_function=sentence_transformer_ef)
 
     count = vectordb.count()
 
@@ -217,9 +246,8 @@ def add_to_vectordb(texts, name, link):
         print(text)
         if text != "":
             count += 1
-            vectordb.add(ids=[str(count)], documents=[text], metadata= [{"name": name, "link": link}])
+            vectordb.add(ids=[str(count)], documents=[text], metadatas=[{"name": name, "pdf_id": pdf_id, "page": page_number}])
 
     print("Added {} documents to the vectordb".format(len(texts)))
 
     return "success"
-
