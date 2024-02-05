@@ -1,7 +1,6 @@
 # Import necessary modules and functions
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, WebSocket, Request, Depends
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import FastAPI, UploadFile, File, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -38,7 +37,6 @@ from fastapi.staticfiles import StaticFiles
 from os import listdir
 from os.path import isfile, join
 from embeddings import SFRMistralEmbeddingFunction
-from pypdf import PdfReader
 
 ### FastAPI ###############################################################################################################
 
@@ -79,7 +77,7 @@ normalize_embeddings=True # Specify whether to normalize the embeddings, meaning
 ) 
 
 # Load the vector database, and save it to the variable vectordb
-vectordb = chromadb_client.create_collection(name="LightGPT_BGE", embedding_function=sentence_transformer_ef, get_or_create=True)
+vectordb = chromadb_client.create_collection(name="LightGPT_BGE", embedding_function=sente, get_or_create=True)
 
 ### Langchain #############################################################################################################
 
@@ -87,11 +85,12 @@ text_splitter = CharacterTextSplitter.from_tiktoken_encoder( # Create an instanc
     chunk_size=2000, chunk_overlap=200
 ) # This function splits text into chunks of 2000 characters, with an overlap of 200 characters
 
-### Initializing ########################################################################################################
+############################################################################################################################
 
-# Create a dictionary to store prompts
-prompts = {}
-questions = {}
+prompts = {} # Define a dictionary to store prompts
+
+questions = {} # Define a dictionary to store answers
+
 last_chats = {}
 
 ### Uploading Text Enpoint ################################################################################################
@@ -120,10 +119,6 @@ class Document(BaseModel):
     name: str
     pages: List[Page]
     pdf_id: str
-
-class Document2(BaseModel):
-    name: str
-    pages: List[Page]
 
 @app.post("/upload_pdf/")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -165,24 +160,6 @@ async def upload_text(document: Document):
 
     return {"message": "success"}
 
-@app.post("/upload_pdf_auto/")
-async def upload_pdf_auto(file: UploadFile = File(...)):
-    reader = PdfReader(file.file)
-    pages = reader.pages
-    meta = reader.metadata
-
-    title = meta["/Title"]
-    if not title and title == "":
-        title = file.filename
-
-    # construct Document
-    document = Document2(name=title, pages=[])
-    for page in pages:
-        text = page.extract_text()
-        pageNumber = page.page_number
-        document.pages.append(Page(text=text, pageNumber=pageNumber))
-
-    return document
 
 ### Deleting PDF Endpoint #################################################################################################
 
@@ -223,7 +200,67 @@ async def ask(question: Question, request: Request):
     
     # Query all documents related to the question
     initial_context = vectordb.query(query_texts=[question.question], 
-                                        n_results=3)
+                                        n_results=5)
+
+    # Format the context into a readable string(Natural Language/자연어)
+    formatted_context = format_context(initial_context)
+    # Create the prompt, using .format() to insert the context and question into the prompt template
+    # This prompt will be used to ask the LLM to filter the context, and return the most relevant context to the question
+    prompt_for_filtering_context = prompt_template_1.format(context=formatted_context, 
+                                                                question=question.question)
+    # Create a unique ID for the prompt
+    prompt_id = str(uuid4())
+    # Store the prompt in the prompts dictionary, using the prompt ID as the key
+    prompts[prompt_id] = {"prompt": prompt_for_filtering_context, "session_id": question.session_id}
+    # Prepare the prompt to be sent to the LLM Server
+    headers, request_data, url = prepare_request_data(prompt_for_filtering_context, 
+                                                        mode='full')
+    # Send the prompt to the LLM Server, and get the response
+    try:
+        response = await asyncio.wait_for(fetch_model_response(prompt_for_filtering_context,
+                                                                 headers, 
+                                                                 request_data, 
+                                                                 url), timeout=100)
+    except asyncio.TimeoutError:
+        return {"message": "No results found"}
+    except Exception as e:
+        print(e)
+        return {"message": "Error processing request"}
+
+    # Parse the response
+    if response != "No results found" and response != "":
+        '''
+        The full response is a String, and the filtered context is a JSON list within the full response
+        As an example, the JSON list may look like this:
+        [
+            { "Reference 1": "261" },
+            { "Reference 2": "274" }
+        ]
+        Lets extract the reference IDs from the JSON list
+        '''
+        # Extract the JSON list from the full response
+        try:
+            # Find the start and end indices of the JSON list
+            start_index = response.find('[')
+            end_index = response.rfind(']') + 1  # Find the last ']' and include it
+
+            # Extract the JSON list string
+            json_list_str = response[start_index:end_index]
+
+            # Parse the JSON list string into a Python list
+            relevant_contexts = json.loads(json_list_str)
+            # Initialize an empty list to store the reference IDs
+            reference_ids = []
+            # Loop through each context in the list
+            for context_dict in relevant_contexts:
+                # Loop through each reference ID in the context
+                for _, reference_id in context_dict.items():
+                    # Add the reference ID to the list of reference IDs
+                    reference_ids.append(reference_id)
+        # If there is an error processing the JSON, set the reference IDs to an empty list
+        except Exception as e:
+            print(f"Error processing JSON: {e}")
+            reference_ids = []
 
     ### Get previous chats ################################################################################################
 
@@ -253,7 +290,8 @@ async def ask(question: Question, request: Request):
     ### Second Prompt + Second LLM Server Request #######################################################################
     
     # Once we have the reference IDs of the most relevant context, we can use them to filter the initial context we queried at the start
-    filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context)
+    filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context, 
+                                                                                reference_ids)
     # Create the second prompt, using .format() to insert the filtered context and question into the prompt template
     # This prompt will be used to ask the LLM to generate an answer to the question, using the filtered context
     prompt_for_answering = prompt_template_2.format(context=filtered_and_formatted_context, 
@@ -270,61 +308,84 @@ async def ask(question: Question, request: Request):
     # Unlike the first prompt, we need to send a streaming response to the frontend, so we need to create a URL for the streaming response
     # The code below creates a URL for the /streaming_response/ endpoint, and passes the prompt ID as a query parameter
     url = str(request.url_for("streaming_response", prompt_id=prompt_id_2))
-    return {
-            "url": url,
-            "relevant_pages": relevant_pages,
-            }
 
-class PDFName(BaseModel):
-    name: str
+    # Return the URL and the relevant context used to generate the answer
+    return {"url": url, "relevant_pages": relevant_pages}
+    
+    '''
+    ### Second Prompt + Second LLM Server Request #######################################################################
+    
+    docs = create_docs_from_results(initial_context)
+    for doc in docs:
+        if doc["id"] in reference_ids:
+            selected_reference_pdf_id = doc["metadata"]["pdf_id"]
+            break
 
-# one pdf at a time
-@app.post("/get_pdf/")
-async def get_pdf(pdf_name: PDFName):
-    pdf_path = f"pdfs/{pdf_name.name}"  # Ensure the file extension is correct
-    try:
-        response = FileResponse(path=pdf_path, filename=pdf_name.name)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"File not found: {pdf_name.name}")
+    full_pdf_texts = vectordb.query(query_texts=[question.question], where={"pdf_id": selected_reference_pdf_id}, n_results=10)
+    full_pdf_text = ""
+    for doc in create_docs_from_results(full_pdf_texts):
+        full_pdf_text += doc["document"] + "\n"
 
-    return response
+    # Once we have the reference IDs of the most relevant context, we can use them to filter the initial context we queried at the start
+    filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context, 
+                                                                                reference_ids)
+    # Create the second prompt, using .format() to insert the filtered context and question into the prompt template
+    # This prompt will be used to ask the LLM to generate an answer to the question, using the filtered context
+    prompt_for_answering = prompt_template_2.format(context=full_pdf_text, 
+                                                        question=question.question)
 
-def generate_thumbnail(pdf_path):
-    thumbnail_path = "thumbnails/" + pdf_path.split('/')[-1].replace('.pdf', '.png')
+    print(prompt_for_answering)
+    
+    # Unique ID for the second prompt
+    prompt_id_2 = str(uuid4())
+    # Store the second prompt in the prompts dictionary using the prompt ID as the key
+    prompts[prompt_id_2] = prompt_for_answering
+    
+    # Unlike the first prompt, we need to send a streaming response to the frontend, so we need to create a URL for the streaming response
+    # The code below creates a URL for the /streaming_response/ endpoint, and passes the prompt ID as a query parameter
+    url = str(request.url_for("streaming_response", prompt_id=prompt_id_2))
 
-    # Check if thumbnail already exists
-    if not isfile(thumbnail_path):
-        try:
-            doc = fitz.open(pdf_path)
-            if doc.page_count > 0:
-                page = doc.load_page(0)  # first page
-                pix = page.get_pixmap()
-                pix.save(thumbnail_path)
-            else:
-                print(f"Document is empty: {pdf_path}")
-                return None
-        except Exception as e:
-            print(f"Error generating thumbnail for {pdf_path}: {e}")
-            return None
-
-    return thumbnail_path
+    # Return the URL and the relevant context used to generate the answer
+    return {"url": url, "relevant_pages": relevant_pages}
 
 
-@app.get("/list_pdfs/")
-async def list_pdfs():
-    pdf_directory = "pdfs/"
-    pdf_dicts = []
-    pdf_files = [f for f in listdir(pdf_directory) if isfile(join(pdf_directory, f)) and f.lower().endswith('.pdf')]
+    '''
+### LLM Server Request ####################################################################################################
 
-    for file in pdf_files:
-        pdf_path = join(pdf_directory, file)
-        thumbnail_path = generate_thumbnail(pdf_path)
-        if thumbnail_path:
-            # Create a URL for the thumbnail
-            thumbnail_url = f"/thumbnails/{thumbnail_path.split('/')[-1]}"
-            pdf_dicts.append({"name": file, "image": thumbnail_url})
+# This function sends the first prompt to the LLM Server, and returns the response
+# The response is a String, which contains the filtered context
+# This function collects the response in chunks, and parses the response to extract the filtered context
+# The collected response is returned all at once, as a String
+async def fetch_model_response(prompt, headers, request_data, url):
+    # Initialize the response
+    full_text = ""
+    # Send the prompt to the LLM Server
+    async with aiohttp.ClientSession() as session:
+        # Send the prompt to the LLM Server, and get the response
+        async with session.post(url, headers=headers, json=request_data) as response:
+            # Loop through the response
+            async for chunk in response.content.iter_any():
+                # Check if the chunk starts with 'data: '
+                if chunk.startswith(b'data: '):
+                    # Remove the 'data: ' prefix
+                    chunk = chunk[6:]
+                    # Try to parse the chunk as JSON
+                    try:
+                        chunk_data = json.loads(chunk.decode("utf-8"))
+                        # Extract the filtered context from the JSON
+                        text = chunk_data["choices"][0]["text"]
+                        # Add the filtered context to the full response
+                        print(text, end="")
+                        full_text += text
+                    # If there is an error parsing the JSON, skip the chunk
+                    except json.JSONDecodeError:
+                        continue
+    return full_text
 
-    return pdf_dicts
+# This function sends the second prompt to the LLM Server, and returns the response in chunks
+# The response is a String, which contains the generated answer
+# This function collects the response in chunks, and yields each chunk
+# The chunks are returned one at a time, as a String
 
 async def stream_generator(prompt_id: str):
     # Check if the prompt ID is valid
@@ -399,7 +460,7 @@ def prepare_request_data(prompt, mode='full'):
             "max_tokens": 2048,
             "stream": True,
             "temperature": 1.0,
-            "min_p": 0.05,
+            "min_p": 0.02,
             "token_repetition_penalty": 1.3,
         }
         url = "http://192.168.100.131:5000/v1/completions"
