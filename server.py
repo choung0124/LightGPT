@@ -37,11 +37,8 @@ import fitz  # PyMuPDF
 from fastapi.staticfiles import StaticFiles
 from os import listdir
 from os.path import isfile, join
-<<<<<<< HEAD
 from embeddings import SFRMistralEmbeddingFunction
 from pypdf import PdfReader
-=======
->>>>>>> a8aceff6a7ad15ecef67934104177a0f22c5b422
 
 ### FastAPI ###############################################################################################################
 
@@ -71,24 +68,17 @@ app.mount("/thumbnails", StaticFiles(directory="thumbnails"), name="thumbnails")
 persist_directory = ("vectordbs/") # Directory where the vector database is stored
 chromadb_client = chromadb.PersistentClient(path=persist_directory) # Create a ChromaDB client in that directory
 
-<<<<<<< HEAD
 chat_persist_directory = ("history/")
 chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 # Create an embedding function(this function will be used to convert text to vectors)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
 model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-=======
-# Create an embedding function(this function will be used to convert text to vectors)
-sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
-model_name="model9/", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
->>>>>>> a8aceff6a7ad15ecef67934104177a0f22c5b422
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 
 
 # Load the vector database, and save it to the variable vectordb
-<<<<<<< HEAD
 vectordb = chromadb_client.create_collection(name="LightGPT_BGE", embedding_function=sentence_transformer_ef, get_or_create=True)
 
 ### Langchain #############################################################################################################
@@ -105,36 +95,6 @@ questions = {}
 last_chats = {}
 
 ### Uploading Text Enpoint ################################################################################################
-=======
-vectordb = chromadb_client.get_collection(name="LightGPT", embedding_function=sentence_transformer_ef)
-
-### Langchain #############################################################################################################
-
-text_splitter = CharacterTextSplitter.from_tiktoken_encoder( # Create an instance of the CharacterTextSplitter class (https://python.langchain.com/docs/modules/data_connection/document_transformers/split_by_token#tiktoken)
-    chunk_size=2000, chunk_overlap=200
-) # This function splits text into chunks of 2000 characters, with an overlap of 200 characters
-
-############################################################################################################################
-
-prompts = {} # Define a dictionary to store prompts
-
-### Uploading PDF Enpoint #################################################################################################
-
-# Define a Pydantic model for PDF upload
-# Pydantic 이란? https://lsjsj92.tistory.com/650
-class PDF(BaseModel):
-    file: UploadFile = File(...) 
-    name: str
-    link: str
-    
-# Endpoint for uploading PDF files
-@app.post("/upload_pdf/")
-async def upload_pdf(pdf: PDF): 
-    # Get the file from the request
-    file = pdf.file
-    # Define the directory where you want to save the file
-    directory = Path("pdfs/")
->>>>>>> a8aceff6a7ad15ecef67934104177a0f22c5b422
 
 # create image from first page of pdf
 def generate_thumbnail(pdf_id, zoom=1):
@@ -143,20 +103,12 @@ def generate_thumbnail(pdf_id, zoom=1):
     pdf_document = fitz.open(pdf_path)
     first_page = pdf_document[0]
 
-<<<<<<< HEAD
     zoom_x = zoom
     zoom_y = zoom
     mat = fitz.Matrix(zoom_x, zoom_y)
 
     pix = first_page.get_pixmap(matrix=mat)  # Correct method name here
     pix.save(f"thumbnails/{pdf_id}.png")
-=======
-    # Save the uploaded file to the directory
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer) 
-
-    texts = load_and_split_document(str(file_path)) # Load and split the document
->>>>>>> a8aceff6a7ad15ecef67934104177a0f22c5b422
 
     return pdf_id
 
@@ -164,16 +116,7 @@ class Page(BaseModel):
     text: str
     pageNumber: int
 
-<<<<<<< HEAD
 class Document(BaseModel):
-=======
-    return result
-    
-### Uploading Text Enpoint ################################################################################################
-
-class Text(BaseModel):
-    string: str
->>>>>>> a8aceff6a7ad15ecef67934104177a0f22c5b422
     name: str
     pages: List[Page]
     pdf_id: str
