@@ -1,3 +1,5 @@
 model9/
 __pychache__/
-
+contexts.json
+documents.json
+history/

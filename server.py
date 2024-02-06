@@ -270,61 +270,16 @@ async def ask(question: Question, request: Request):
     # Unlike the first prompt, we need to send a streaming response to the frontend, so we need to create a URL for the streaming response
     # The code below creates a URL for the /streaming_response/ endpoint, and passes the prompt ID as a query parameter
     url = str(request.url_for("streaming_response", prompt_id=prompt_id_2))
-    return {
-            "url": url,
-            "relevant_pages": relevant_pages,
-            }
 
-class PDFName(BaseModel):
-    name: str
+    # Return the URL and the relevant context used to generate the answer
+    return {"url": url, "relevant_pages": relevant_pages}
+    
+### LLM Server Request ####################################################################################################
 
-# one pdf at a time
-@app.post("/get_pdf/")
-async def get_pdf(pdf_name: PDFName):
-    pdf_path = f"pdfs/{pdf_name.name}"  # Ensure the file extension is correct
-    try:
-        response = FileResponse(path=pdf_path, filename=pdf_name.name)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"File not found: {pdf_name.name}")
-
-    return response
-
-def generate_thumbnail(pdf_path):
-    thumbnail_path = "thumbnails/" + pdf_path.split('/')[-1].replace('.pdf', '.png')
-
-    # Check if thumbnail already exists
-    if not isfile(thumbnail_path):
-        try:
-            doc = fitz.open(pdf_path)
-            if doc.page_count > 0:
-                page = doc.load_page(0)  # first page
-                pix = page.get_pixmap()
-                pix.save(thumbnail_path)
-            else:
-                print(f"Document is empty: {pdf_path}")
-                return None
-        except Exception as e:
-            print(f"Error generating thumbnail for {pdf_path}: {e}")
-            return None
-
-    return thumbnail_path
-
-
-@app.get("/list_pdfs/")
-async def list_pdfs():
-    pdf_directory = "pdfs/"
-    pdf_dicts = []
-    pdf_files = [f for f in listdir(pdf_directory) if isfile(join(pdf_directory, f)) and f.lower().endswith('.pdf')]
-
-    for file in pdf_files:
-        pdf_path = join(pdf_directory, file)
-        thumbnail_path = generate_thumbnail(pdf_path)
-        if thumbnail_path:
-            # Create a URL for the thumbnail
-            thumbnail_url = f"/thumbnails/{thumbnail_path.split('/')[-1]}"
-            pdf_dicts.append({"name": file, "image": thumbnail_url})
-
-    return pdf_dicts
+# This function sends the second prompt to the LLM Server, and returns the response in chunks
+# The response is a String, which contains the generated answer
+# This function collects the response in chunks, and yields each chunk
+# The chunks are returned one at a time, as a String
 
 async def stream_generator(prompt_id: str):
     # Check if the prompt ID is valid
