@@ -10,7 +10,7 @@ from server_utils import (
     load_and_split_document,
     add_to_vectordb,
     prompt_template_1,
-    prompt_template_openai,
+    prompt_template_2,
     format_context,
     filter_and_format_context,
     create_docs_from_results
@@ -39,17 +39,12 @@ from os import listdir
 from os.path import isfile, join
 from embeddings import SFRMistralEmbeddingFunction
 from pypdf import PdfReader
-from openai import AsyncOpenAI
 
 ### FastAPI ###############################################################################################################
 
 # Initialize FastAPI app
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
-
-os.environ["OPENAI_API_KEY"] = "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"
-
-client = AsyncOpenAI()
 
 # Set CORS (Cross-Origin Resource Sharing) policy 
 # CORS 이란? https://inpa.tistory.com/entry/WEB-%F0%9F%93%9A-CORS-%F0%9F%92%AF-%EC%A0%95%EB%A6%AC-%ED%95%B4%EA%B2%B0-%EB%B0%A9%EB%B2%95-%F0%9F%91%8F
@@ -78,14 +73,13 @@ chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 # Create an embedding function(this function will be used to convert text to vectors)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
-#model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-model_name="intfloat/multilingual-e5-large",
+model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 
 
 # Load the vector database, and save it to the variable vectordb
-vectordb = chromadb_client.create_collection(name="LightGPT_e5_multilingual", embedding_function=sentence_transformer_ef, get_or_create=True)
+vectordb = chromadb_client.create_collection(name="LightGPT_BGE", embedding_function=sentence_transformer_ef, get_or_create=True)
 
 ### Langchain #############################################################################################################
 
@@ -154,7 +148,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/upload_text/")
 async def upload_text(document: Document):
-    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual",
+    vectordb = chromadb_client.get_collection(name="LightGPT_BGE",
                                                 embedding_function=sentence_transformer_ef)
     # Generating Thumbnail
     pdf_id = document.pdf_id
@@ -166,7 +160,7 @@ async def upload_text(document: Document):
 
     del vectordb
     gc.collect()
-    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual", 
+    vectordb = chromadb_client.get_collection(name="LightGPT_BGE", 
                                                     embedding_function=sentence_transformer_ef)
 
     return {"message": "success"}
@@ -240,6 +234,7 @@ async def ask(question: Question, request: Request):
     # Query all documents related to the question
 
     previous_chats = []
+
     chat_context = Chat_VectorDB.query(query_texts=[question.question], n_results=5)
 
     if chat_context and len(chat_context) > 0:
@@ -261,7 +256,7 @@ async def ask(question: Question, request: Request):
     filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context)
     # Create the second prompt, using .format() to insert the filtered context and question into the prompt template
     # This prompt will be used to ask the LLM to generate an answer to the question, using the filtered context
-    prompt_for_answering = prompt_template_openai.format(context=filtered_and_formatted_context, 
+    prompt_for_answering = prompt_template_2.format(context=filtered_and_formatted_context, 
                                                         question=question.question,
                                                         previous_chats_str=previous_chats_str)
     
@@ -286,43 +281,6 @@ async def ask(question: Question, request: Request):
 # This function collects the response in chunks, and yields each chunk
 # The chunks are returned one at a time, as a String
 
-def generate_thumbnail(pdf_path):
-    thumbnail_path = "thumbnails/" + pdf_path.split('/')[-1].replace('.pdf', '.png')
-
-    # Check if thumbnail already exists
-    if not isfile(thumbnail_path):
-        try:
-            doc = fitz.open(pdf_path)
-            if doc.page_count > 0:
-                page = doc.load_page(0)  # first page
-                pix = page.get_pixmap()
-                pix.save(thumbnail_path)
-            else:
-                print(f"Document is empty: {pdf_path}")
-                return None
-        except Exception as e:
-            print(f"Error generating thumbnail for {pdf_path}: {e}")
-            return None
-
-    return thumbnail_path
-
-
-@app.get("/list_pdfs/")
-async def list_pdfs():
-    pdf_directory = "pdfs/"
-    pdf_dicts = []
-    pdf_files = [f for f in listdir(pdf_directory) if isfile(join(pdf_directory, f)) and f.lower().endswith('.pdf')]
-
-    for file in pdf_files:
-        pdf_path = join(pdf_directory, file)
-        thumbnail_path = generate_thumbnail(pdf_path)
-        if thumbnail_path:
-            # Create a URL for the thumbnail
-            thumbnail_url = f"/thumbnails/{thumbnail_path.split('/')[-1]}"
-            pdf_dicts.append({"name": file, "image": thumbnail_url})
-
-    return pdf_dicts
-
 async def stream_generator(prompt_id: str):
     # Check if the prompt ID is valid
     if prompt_id not in prompts:
@@ -334,33 +292,73 @@ async def stream_generator(prompt_id: str):
     prompt = prompts[prompt_id]
 
     prompt_text = prompt["prompt"]
+    # Prepare the prompt to be sent to the LLM Server
+    headers, request_data, url = prepare_request_data(prompt_text, mode='generator')
 
     full_text = ""
 
     session_id = prompt["session_id"]
 
-    # Assuming 'client' is defined and set up correctly for asynchronous API calls
-    completion = await client.chat.completions.create(
-        model="gpt-3.5-turbo-0125",
-        #model="gpt-4-0125-preview"
-        messages=[
-            {"role": "system", "content": "You are a domain expert in everything related to light and its relations to neurological disorders. Please response in the language of the user's question."},
-            {"role": "user", "content": prompt_text}
-        ],
-        stream=True
-    )
+    # Send the prompt to the LLM Server, and get the response
+    async with aiohttp.ClientSession() as session:
+        # Send the prompt to the LLM Server, and get the response
+        async with session.post(url, headers=headers, json=request_data) as response:
+            # Loop through the response
+            async for chunk in response.content.iter_any():
+                # Check if the chunk starts with 'data: '
+                if chunk.startswith(b'data: '):
+                    chunk = chunk[6:]  # Remove 'data: ' prefix
+                    # Try to parse the chunk as JSON
+                    try:
+                        chunk_data = json.loads(chunk.decode("utf-8"))
+                        # Extract the generated text from the JSON
+                        text = chunk_data["choices"][0]["text"]
 
-    # Process the streaming response
-    async for chunk in completion:
-        if chunk.choices[0].delta.content is not None:
-            print(chunk.choices[0].delta.content, end="", flush=True)
-            yield chunk.choices[0].delta.content
+                        full_text += text
+                        # Yield the generated text
+                        yield text
+                    # If there is an error parsing the JSON, skip the chunk
+                    except json.JSONDecodeError:
+                        continue
 
-    #Chat_VectorDB = chat_client.get_collection(name=session_id, embedding_function=sentence_transformer_ef)
+    Chat_VectorDB = chat_client.get_collection(name=session_id, embedding_function=sentence_transformer_ef)
     Final_text = f"Question: {questions[prompt_id]}\nAnswer: {full_text}\n\n"
-    #Chat_VectorDB.add(ids=[str(Chat_VectorDB.count()+1)], documents=[Final_text])
+    Chat_VectorDB.add(ids=[str(Chat_VectorDB.count()+1)], documents=[Final_text])
     last_chats[session_id].append(Final_text)
 
+### Prepare Request Data #################################################################################################
+
+# This function prepares the prompt to be sent to the LLM Server
+# The prompt is sent as a JSON object, with the format expected by the LLM Server
+def prepare_request_data(prompt, mode='full'):
+    # Set the API key and headers
+    x_api_key = "67d8ece657b29e5219190ee2ba7eb2db"
+    headers = {"x-api-key": x_api_key, "Content-Type": "application/json"}
+    # Set the request data and URL
+    if mode == 'full':
+        request_data = {
+            "model": "brucethemoose_Yi-34B-200K-DARE-merge-v7-4bpw-exl2-fiction",
+            "prompt": prompt,
+            "max_tokens": 128,
+            "stream": True,
+            "temperature": 1.0,
+            "min_p": 0.05,
+            "token_repetition_penalty": 1.7,
+            "stop": ["/List"]
+        }
+        url = "http://192.168.100.131:5005/v1/completions"
+    else:  # mode == 'generator'
+        request_data = {
+            "model": "brucethemoose_Yi-34B-200K-DARE-merge-v7-4bpw-exl2-fiction",
+            "prompt": prompt,
+            "max_tokens": 2048,
+            "stream": True,
+            "temperature": 1.0,
+            "min_p": 0.05,
+            "token_repetition_penalty": 1.3,
+        }
+        url = "http://192.168.100.131:5000/v1/completions"
+    return headers, request_data, url
 
 @app.get("/streaming_response/{prompt_id}")
 async def streaming_response(prompt_id: str):
@@ -402,4 +400,4 @@ async def list_pdfs():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

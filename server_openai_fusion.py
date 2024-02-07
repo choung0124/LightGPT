@@ -13,7 +13,9 @@ from server_utils import (
     prompt_template_openai,
     format_context,
     filter_and_format_context,
-    create_docs_from_results
+    create_docs_from_results,
+    prompt_template_openai_fusion,
+    filter_and_format_context_fusion
 )
 from pathlib import Path
 import shutil
@@ -223,13 +225,70 @@ class Question(BaseModel):
     question: str
     session_id: str
 
+# example rank fusion
+
+def reciprocal_rank_fusion(search_results, k=60):
+    fused_scores = {}
+    for query, docs in search_results.items():
+        ranked_docs = sorted(docs, key=lambda x: x['distance'])
+        for rank, doc in enumerate(ranked_docs, start=1):
+            doc_id = doc['id']
+            if doc_id not in fused_scores:
+                fused_scores[doc_id] = 0
+            fused_scores[doc_id] += 1 / (rank + k)
+    
+    return sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)
+
 @app.post("/ask/")
 async def ask(question: Question, request: Request):
     ### First Prompt + First LLM Server Request ############################################################################
     
-    # Query all documents related to the question
-    initial_context = vectordb.query(query_texts=[question.question], 
-                                        n_results=3)
+    fusion_prompt = prompt_template_openai_fusion.format(question=question.question)
+
+    completion = await client.chat.completions.create(
+        model="gpt-3.5-turbo-0125",
+        #model="gpt-4-0125-preview",
+        response_format={ "type": "json_object" },
+        messages=[
+            {"role": "system", "content": "You are a domain expert in everything related to light and its relations to neurological disorders. Please response in the language of the user's question."},
+            {"role": "user", "content": fusion_prompt}
+        ]
+    )
+
+    questions_dict = json.loads(completion.choices[0].message.content)
+
+    print(questions_dict)
+
+    total_context = {}
+    for query_name, query_text in questions_dict.items():
+        context = vectordb.query(query_texts=[query_text], n_results=5)
+        context = create_docs_from_results(context)
+        # Aggregate context by query for RRF
+        total_context[query_name] = context
+
+        # Apply RRF and rerank results
+    fused_results = reciprocal_rank_fusion(total_context)
+
+    # Output or process fused_results as needed
+    for doc_id, fused_score in fused_results:
+        print(f"Document ID: {doc_id}, Fused Score: {fused_score}")
+
+    print(fused_results)
+
+    # choose the top 3
+    fused_results = fused_results[:3]
+
+    # filter toal context
+    filtered_context = []
+    for doc_id, _ in fused_results:
+        for query_name, context in total_context.items():
+            for doc in context:
+                if doc["id"] == doc_id:
+                    filtered_context.append(doc)
+                    break
+
+    # filter for unique documents
+    filtered_context = list({v['id']:v for v in filtered_context}.values())
 
     ### Get previous chats ################################################################################################
 
@@ -258,7 +317,7 @@ async def ask(question: Question, request: Request):
     ### Second Prompt + Second LLM Server Request #######################################################################
     
     # Once we have the reference IDs of the most relevant context, we can use them to filter the initial context we queried at the start
-    filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context)
+    filtered_and_formatted_context, relevant_pages = filter_and_format_context_fusion(filtered_context)
     # Create the second prompt, using .format() to insert the filtered context and question into the prompt template
     # This prompt will be used to ask the LLM to generate an answer to the question, using the filtered context
     prompt_for_answering = prompt_template_openai.format(context=filtered_and_formatted_context, 

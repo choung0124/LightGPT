@@ -24,7 +24,23 @@ Context:
 Previous Chats:
 {previous_chats_str} [/INST]"""
 
+prompt_template_openai = """Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. 
+Question: {question}
+Context:
+{context} 
+Previous Chats:
+{previous_chats_str}"""
 
+
+prompt_template_openai_fusion = """Below is a question, generate 4 related queries. Follow this guide: Identify the question's main topic, then rephrase it using synonyms, alternative sentence structures, and related terms, ensuring each version maintains the original intent.
+Response in JSON format:
+{{
+    "Query 1": "Your Query 1 goes here",
+    "Query 2": "Your Query 2 goes here",
+    "Query 3": "Your Query 3 goes here",
+    "Query 4": "Your Query 4 goes here"
+}}
+Question: {question}"""
 
 '''
 prompt_template = """USER: Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. When presenting your answer, strictly follow this format:
@@ -171,12 +187,18 @@ def create_docs_from_results(results):
     # Flatten the lists
     documents = [doc for sublist in results["documents"] for doc in sublist]
     metadatas = [meta for sublist in results["metadatas"] for meta in sublist]
+    distances = [dist for sublist in results["distances"] for dist in sublist]
     ids = [id for sublist in results["ids"] for id in sublist]
 
     # Create the list of dictionaries
     docs = []
-    for document, metadata, id in zip(documents, metadatas, ids):
-        doc = {"document": document, "metadata": metadata, "id": id}
+    for document, metadata, distance, id in zip(documents, metadatas, distances, ids):
+        doc = {
+            "document": document,
+            "metadata": metadata,
+            "distance": distance,
+            "id": id
+        }
         docs.append(doc)
 
     return docs
@@ -224,6 +246,28 @@ def filter_and_format_context(results):
     formatted_context = "\n".join(contexts)
 
     return formatted_context, relevant_pages
+
+def filter_and_format_context_fusion(docs):
+    # Create the list of formatted context strings
+    contexts = []
+    relevant_pages = []
+    count = 0
+    for doc in docs:
+        document = doc["document"]
+        metadata = doc["metadata"]
+
+        context_str = f"{document}\nFrom: {metadata['name']}\n"
+        name = metadata['name']
+        page_number = metadata['page']
+        pdf_id = metadata['pdf_id']
+        relevant_pages.append({"name": name, "pdf_id": pdf_id, "page": page_number})
+        contexts.append(context_str)
+
+    # Join the contexts into one string with separators
+    formatted_context = "\n".join(contexts)
+
+    return formatted_context, relevant_pages
+
 
 
 def load_and_split_document(file_path):
