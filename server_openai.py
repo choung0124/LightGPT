@@ -47,7 +47,7 @@ from openai import AsyncOpenAI
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = ""
 
 client = AsyncOpenAI()
 
