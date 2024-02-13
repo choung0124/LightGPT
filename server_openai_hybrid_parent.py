@@ -13,7 +13,9 @@ from server_utils import (
     prompt_template_openai,
     format_context,
     filter_and_format_context,
-    create_docs_from_results
+    create_docs_from_results,
+    filter_and_format_context_fusion,
+    prompt_template_openai,
 )
 from pathlib import Path
 import shutil
@@ -40,6 +42,7 @@ from os.path import isfile, join
 from embeddings import SFRMistralEmbeddingFunction
 from pypdf import PdfReader
 from openai import AsyncOpenAI
+from rank_bm25 import BM25Okapi
 
 ### FastAPI ###############################################################################################################
 
@@ -47,7 +50,7 @@ from openai import AsyncOpenAI
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
-os.environ["OPENAI_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = "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"
 
 client = AsyncOpenAI()
 
@@ -79,13 +82,13 @@ chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
 #model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-model_name
+model_name="intfloat/multilingual-e5-large",
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 
 
 # Load the vector database, and save it to the variable vectordb
-vectordb = chromadb_client.create_collection(name="LightGPT_e5_multilingual", embedding_function=sentence_transformer_ef, get_or_create=True)
+vectordb = chromadb_client.create_collection(name="LightGPT_e5_multilingual_split", embedding_function=sentence_transformer_ef, get_or_create=True)
 
 ### Langchain #############################################################################################################
 
@@ -154,7 +157,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/upload_text/")
 async def upload_text(document: Document):
-    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual",
+    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual_split",
                                                 embedding_function=sentence_transformer_ef)
     # Generating Thumbnail
     pdf_id = document.pdf_id
@@ -166,7 +169,7 @@ async def upload_text(document: Document):
 
     del vectordb
     gc.collect()
-    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual", 
+    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual_split", 
                                                     embedding_function=sentence_transformer_ef)
 
     return {"message": "success"}
@@ -223,13 +226,59 @@ class Question(BaseModel):
     question: str
     session_id: str
 
+def hybrid_search_with_metadata(query, bm25_instance, metadata_mapping, id_mapping, tokenized_texts, top_n=2):
+    query_tokens = query.split()
+    scores = bm25_instance.get_scores(query_tokens)
+    top_n_indexes = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
+    
+    # Use the original texts instead of tokenized texts if needed
+    top_docs = [tokenized_texts[i] for i in top_n_indexes]  # Assuming you need tokenized texts
+    top_metadata = [metadata_mapping[i] for i in top_n_indexes]  # Retrieve associated metadata
+    top_ids = [id_mapping[i] for i in top_n_indexes]
+    
+    return top_docs, top_metadata, top_ids
+
 @app.post("/ask/")
 async def ask(question: Question, request: Request):
     ### First Prompt + First LLM Server Request ############################################################################
     
     # Query all documents related to the question
     initial_context = vectordb.query(query_texts=[question.question], 
-                                        n_results=3)
+                                        n_results=10)
+
+    results = create_docs_from_results(initial_context)
+
+    # Tokenize documents and prepare metadata mapping
+    tokenized_texts = []
+    metadata_mapping = []
+    id_mapping = []
+
+    for result in results:
+        # Tokenize the document text
+#        tokenized_text = result["document"].split()  # Simple whitespace tokenization
+        tokenized_text = result["metadata"]["parent_text"].split()  # Simple whitespace tokenization
+
+        tokenized_texts.append(tokenized_text)
+        
+        # Prepare and store metadata
+        metadata = result["metadata"]  # Assuming metadata contains 'name', 'pdf_id', 'page', etc.
+        metadata_mapping.append(metadata)
+
+        id_mapping.append(result["id"])
+
+    bm25_from_vectordb_results = BM25Okapi(tokenized_texts)
+
+    query = question.question
+
+    top_docs, top_metadata, top_ids = hybrid_search_with_metadata(query, bm25_from_vectordb_results, metadata_mapping, id_mapping, tokenized_texts, top_n=2)
+
+    # filter initial context with top_ids
+    filtered_initial_context = []
+    for doc in results:
+        if doc["id"] in top_ids:
+            filtered_initial_context.append(doc)
+
+    print(f"Filtered initial context: {filtered_initial_context}")
 
     ### Get previous chats ################################################################################################
 
@@ -258,12 +307,14 @@ async def ask(question: Question, request: Request):
     ### Second Prompt + Second LLM Server Request #######################################################################
     
     # Once we have the reference IDs of the most relevant context, we can use them to filter the initial context we queried at the start
-    filtered_and_formatted_context, relevant_pages = filter_and_format_context(initial_context)
+    filtered_and_formatted_context, relevant_pages = filter_and_format_context_fusion(filtered_initial_context)
     # Create the second prompt, using .format() to insert the filtered context and question into the prompt template
     # This prompt will be used to ask the LLM to generate an answer to the question, using the filtered context
     prompt_for_answering = prompt_template_openai.format(context=filtered_and_formatted_context, 
                                                         question=question.question,
                                                         previous_chats_str=previous_chats_str)
+
+    print(f"Prompt for answering: {prompt_for_answering}")
     
     # Unique ID for the second prompt
     prompt_id_2 = str(uuid4())

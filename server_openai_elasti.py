@@ -40,6 +40,7 @@ from os.path import isfile, join
 from embeddings import SFRMistralEmbeddingFunction
 from pypdf import PdfReader
 from openai import AsyncOpenAI
+from elasticsearch import Elasticsearch
 
 ### FastAPI ###############################################################################################################
 
@@ -47,7 +48,7 @@ from openai import AsyncOpenAI
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
-os.environ["OPENAI_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = "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"
 
 client = AsyncOpenAI()
 
@@ -79,7 +80,7 @@ chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
 #model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-model_name
+model_name="intfloat/multilingual-e5-large",
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 

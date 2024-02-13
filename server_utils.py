@@ -27,7 +27,7 @@ Previous Chats:
 prompt_template_openai = """Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. 
 Question: {question}
 Context:
-{context} 
+{context}
 Previous Chats:
 {previous_chats_str}"""
 
@@ -40,6 +40,9 @@ Response in JSON format:
     "Query 3": "Your Query 3 goes here",
     "Query 4": "Your Query 4 goes here"
 }}
+Question: {question}"""
+
+prompt_template_openai_hyde = """Please write a passage to answer the question 
 Question: {question}"""
 
 '''
@@ -257,6 +260,28 @@ def filter_and_format_context_fusion(docs):
         metadata = doc["metadata"]
 
         context_str = f"{document}\nFrom: {metadata['name']}\n"
+        name = metadata['name']
+        page_number = metadata['page']
+        pdf_id = metadata['pdf_id']
+        relevant_pages.append({"name": name, "pdf_id": pdf_id, "page": page_number})
+        contexts.append(context_str)
+
+    # Join the contexts into one string with separators
+    formatted_context = "\n".join(contexts)
+
+    return formatted_context, relevant_pages
+
+def filter_and_format_context_hybrid_parent(docs):
+    # Create the list of formatted context strings
+    contexts = []
+    relevant_pages = []
+    count = 0
+    for doc in docs:
+        document = doc["document"]
+        metadata = doc["metadata"]
+        parent_text = metadata["parent_text"]
+
+        context_str = f"{parent_text}\nFrom: {metadata['name']}\n"
         name = metadata['name']
         page_number = metadata['page']
         pdf_id = metadata['pdf_id']

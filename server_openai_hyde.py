@@ -13,7 +13,10 @@ from server_utils import (
     prompt_template_openai,
     format_context,
     filter_and_format_context,
-    create_docs_from_results
+    create_docs_from_results,
+    prompt_template_openai_fusion,
+    filter_and_format_context_fusion,
+    prompt_template_openai_hyde
 )
 from pathlib import Path
 import shutil
@@ -47,7 +50,7 @@ from openai import AsyncOpenAI
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
-os.environ["OPENAI_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = "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"
 
 client = AsyncOpenAI()
 
@@ -79,7 +82,7 @@ chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
 #model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-model_name
+model_name="intfloat/multilingual-e5-large",
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 
@@ -223,14 +226,22 @@ class Question(BaseModel):
     question: str
     session_id: str
 
+# example rank fusion
+
+def reciprocal_rank_fusion(search_results, k=60):
+    fused_scores = {}
+    for query, docs in search_results.items():
+        ranked_docs = sorted(docs, key=lambda x: x['distance'])
+        for rank, doc in enumerate(ranked_docs, start=1):
+            doc_id = doc['id']
+            if doc_id not in fused_scores:
+                fused_scores[doc_id] = 0
+            fused_scores[doc_id] += 1 / (rank + k)
+    
+    return sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)
+
 @app.post("/ask/")
 async def ask(question: Question, request: Request):
-    ### First Prompt + First LLM Server Request ############################################################################
-    
-    # Query all documents related to the question
-    initial_context = vectordb.query(query_texts=[question.question], 
-                                        n_results=3)
-
     ### Get previous chats ################################################################################################
 
     # Get the session ID from the question
@@ -254,6 +265,27 @@ async def ask(question: Question, request: Request):
             previous_chats += last_two_chats
 
     previous_chats_str = "\n".join(previous_chats)
+
+    ### First Prompt + First LLM Server Request ############################################################################
+    
+    fusion_prompt = prompt_template_openai_hyde.format(question=question.question, 
+                                                        previous_chats_str=previous_chats_str)
+
+    completion = await client.chat.completions.create(
+        model="gpt-3.5-turbo-0125",
+        #model="gpt-4-0125-preview",
+        messages=[
+            {"role": "system", "content": "You are a domain expert in everything related to light and its relations to neurological disorders. Please response in the language of the user's question."},
+            {"role": "user", "content": fusion_prompt}
+        ]
+    )
+
+    answer = completion.choices[0].message.content
+
+    print(answer)
+
+    initial_context = vectordb.query(query_texts=[answer], 
+                                        n_results=3)
 
     ### Second Prompt + Second LLM Server Request #######################################################################
     
