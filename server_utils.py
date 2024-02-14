@@ -45,6 +45,30 @@ Question: {question}"""
 prompt_template_openai_hyde = """Please write a passage to answer the question 
 Question: {question}"""
 
+prompt_template_openai_compression = """Given the following question and context, extract any part of the context that is relevant to answer the question. When presenting your extracted context, strictly follow this format:
+[
+    {{ "Reference 1": "Reference ID" }},
+    {{ "Reference 2": "Reference ID" }},
+    {{ "Reference n": "Reference ID" }}
+]
+/List
+You MUST use /List to indicate the end of your list of references.
+For example, if you think Reference 1 and Reference 3 are relevant, your response should look like this. Do not include anything else in your response:
+[
+    {{ "Reference 1": "Reference ID" }},
+    {{ "Reference 3": "Reference ID" }}
+]
+/List
+If there are no references that help answer the question, your response should look like this. Do not include anything else in your response:
+[
+    {{ }}
+]
+/List
+
+Question: {question}
+Context
+{context}"""
+
 '''
 prompt_template = """USER: Below is a question, followed by a list of context that may be related to the question. WITHOUT relying on your own knowledge, give a detailed answer, only using information from the context below. When presenting your answer, strictly follow this format:
 Answer: Your Answer goes here

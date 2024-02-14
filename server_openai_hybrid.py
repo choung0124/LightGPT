@@ -50,7 +50,7 @@ from rank_bm25 import BM25Okapi
 # Fast API 이란? https://velog.io/@cho876/%EC%9A%94%EC%A6%98-%EB%9C%A8%EA%B3%A0%EC%9E%88%EB%8B%A4%EB%8A%94-FastAPI
 app = FastAPI()
 
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = "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"
 
 client = AsyncOpenAI()
 
@@ -82,13 +82,13 @@ chat_client = chromadb.PersistentClient(path=chat_persist_directory)
 
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction( # Create an instance of the SentenceTransformerEmbeddingFunction class (https://docs.trychroma.com/embeddings)
 #model_name="BAAI/bge-large-en-v1.5", # Specify the name of the SentenceTransformer model, in this case, model9 which is locally stored
-model_name="BAAI/bge-m3",
+model_name="intfloat/multilingual-e5-large",
 device="cuda", # Specify the device to use, in this case, GPU
 normalize_embeddings=True # Specify whether to normalize the embeddings, meaning that the embeddings will be scaled to have a norm of 1
 ) 
 
 # Load the vector database, and save it to the variable vectordb
-vectordb = chromadb_client.create_collection(name="LightGPT_BGEM3", embedding_function=sentence_transformer_ef, get_or_create=True)
+vectordb = chromadb_client.create_collection(name="LightGPT_e5_multilingual", embedding_function=sentence_transformer_ef, get_or_create=True)
 
 ### Langchain #############################################################################################################
 
@@ -157,7 +157,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/upload_text/")
 async def upload_text(document: Document):
-    vectordb = chromadb_client.get_collection(name="LightGPT_BGEM3",
+    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual",
                                                 embedding_function=sentence_transformer_ef)
     # Generating Thumbnail
     pdf_id = document.pdf_id
@@ -169,7 +169,7 @@ async def upload_text(document: Document):
 
     del vectordb
     gc.collect()
-    vectordb = chromadb_client.get_collection(name="LightGPT_BGEM3", 
+    vectordb = chromadb_client.get_collection(name="LightGPT_e5_multilingual", 
                                                     embedding_function=sentence_transformer_ef)
 
     return {"message": "success"}
